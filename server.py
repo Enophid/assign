@@ -122,9 +122,13 @@ class ForumServer:
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp_socket.bind(('0.0.0.0', self.port))
         
+        print(f"UDP server listening on port {self.port}")
+        
         while True:
             try:
+                print("Waiting for UDP messages...")
                 data, client_address = udp_socket.recvfrom(4096)
+                print(f"Received {len(data)} bytes from {client_address}")
                 
                 # Handle message in a separate thread for concurrent access
                 threading.Thread(
@@ -162,6 +166,8 @@ class ForumServer:
             command = message.get('command')
             request_id = message.get('request_id', 'unknown')
             username = message.get('username', 'Unknown')
+            
+            print(f"Processing command: {command} from {client_address}, request_id: {request_id}")
             
             # Check if this is a duplicate request that we've already processed
             request_key = f"{request_id}:{client_address[0]}:{client_address[1]}"

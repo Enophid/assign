@@ -11,9 +11,16 @@ import hashlib
 import uuid  # Add this for generating unique request IDs
 
 class ForumClient:
-    def __init__(self, server_port):
-        self.server_host = 'localhost'  # Default to localhost
-        self.server_port = int(server_port)
+    def __init__(self, server_address):
+        # Parse server address - could be a hostname:port or IP:port format
+        if ':' in server_address:
+            self.server_host, port_str = server_address.split(':', 1)
+            self.server_port = int(port_str)
+        else:
+            # Assume it's just a port number
+            self.server_host = 'localhost'
+            self.server_port = int(server_address)
+            
         self.username = None
         self.commands = {
             'CRT': self.create_thread,
@@ -38,6 +45,8 @@ class ForumClient:
         
         # Register an exit handler
         atexit.register(self.clean_exit)
+        
+        print(f"Connecting to server at {self.server_host}:{self.server_port}")
     
     def signal_handler(self, sig, frame):
         """Handle termination signals"""
@@ -105,63 +114,117 @@ class ForumClient:
                 continue
                 
             # First check if username exists
-            response = self.check_username(username)
+            max_attempts = 3  # Maximum attempts to try the command if there's a timeout
+            attempt = 0
             
-            if response['status'] == 'error':
-                # Check if the user is already logged in
-                if "already logged in" in response.get('message', ''):
-                    print(f"{username} has already logged in")
-                    continue
-                # Handle other errors
-                else:
-                    print(f"Error: {response['message']}")
-                    continue
-            
-            if response['status'] == 'exists':
-                # Username exists, try to login with password
-                password = getpass.getpass("Enter password: ")
-                if not password:
-                    print("Password cannot be empty.")
-                    continue
-                    
-                login_response = self.login(username, password)
-                if login_response['status'] == 'success':
-                    self.username = username
-                    print("Welcome to the forum")
-                    return
-                else:
-                    # Check if the user is already logged in (as a final check)
-                    if "already logged in" in login_response.get('message', ''):
-                        print(f"{username} has already logged in")
+            while attempt < max_attempts:
+                response = self.check_username(username)
+                
+                # Handle connection errors more gracefully
+                if response['status'] == 'error' and 'timed out' in response.get('message', '').lower():
+                    attempt += 1
+                    if attempt < max_attempts:
+                        print(f"Connection failed. Retrying ({attempt}/{max_attempts})...")
+                        time.sleep(1)  # Wait before retrying
                         continue
                     else:
-                        print("Invalid password")
-                        continue
-            elif response['status'] == 'new':
-                password = getpass.getpass("New user, enter password: ")
-                if not password:
-                    print("Password cannot be empty.")
-                    continue
+                        print("Couldn't connect to server. Please check if the server is running and try again later.")
+                        return
+                
+                # Process the response
+                if response['status'] == 'error':
+                    # Check if the user is already logged in
+                    if "already logged in" in response.get('message', ''):
+                        print(f"{username} has already logged in")
+                        break  # Exit the retry loop but continue the main auth loop
+                    # Handle other errors
+                    else:
+                        print(f"Error: {response['message']}")
+                        break  # Exit the retry loop but continue the main auth loop
+                
+                if response['status'] == 'exists':
+                    # Username exists, try to login with password
+                    password = getpass.getpass("Enter password: ")
+                    if not password:
+                        print("Password cannot be empty.")
+                        break  # Exit the retry loop but continue the main auth loop
                     
-                register_response = self.register(username, password)
-                if register_response['status'] == 'success':
-                    self.username = username
-                    print("Welcome to the forum")
-                    return
+                    # Retry login if there's a timeout
+                    login_attempt = 0
+                    while login_attempt < max_attempts:
+                        login_response = self.login(username, password)
+                        
+                        # Handle connection errors
+                        if login_response['status'] == 'error' and 'timed out' in login_response.get('message', '').lower():
+                            login_attempt += 1
+                            if login_attempt < max_attempts:
+                                print(f"Connection failed. Retrying login ({login_attempt}/{max_attempts})...")
+                                time.sleep(1)
+                                continue
+                            else:
+                                print("Couldn't connect to server. Please check if the server is running and try again later.")
+                                return
+                        
+                        if login_response['status'] == 'success':
+                            self.username = username
+                            print("Welcome to the forum")
+                            return
+                        else:
+                            # Check if the user is already logged in
+                            if "already logged in" in login_response.get('message', ''):
+                                print(f"{username} has already logged in")
+                                break
+                            else:
+                                print("Invalid password")
+                                break
+                    
+                    break  # Exit the retry loop but continue the main auth loop
+                    
+                elif response['status'] == 'new':
+                    password = getpass.getpass("New user, enter password: ")
+                    if not password:
+                        print("Password cannot be empty.")
+                        break
+                    
+                    # Retry registration if there's a timeout
+                    register_attempt = 0
+                    while register_attempt < max_attempts:
+                        register_response = self.register(username, password)
+                        
+                        # Handle connection errors
+                        if register_response['status'] == 'error' and 'timed out' in register_response.get('message', '').lower():
+                            register_attempt += 1
+                            if register_attempt < max_attempts:
+                                print(f"Connection failed. Retrying registration ({register_attempt}/{max_attempts})...")
+                                time.sleep(1)
+                                continue
+                            else:
+                                print("Couldn't connect to server. Please check if the server is running and try again later.")
+                                return
+                        
+                        if register_response['status'] == 'success':
+                            self.username = username
+                            print("Welcome to the forum")
+                            return
+                        else:
+                            print(f"Registration failed: {register_response['message']}")
+                            break
+                    
+                    break  # Exit the retry loop but continue the main auth loop
                 else:
-                    print(f"Registration failed: {register_response['message']}")
-                    continue
-            else:
-                # Handle unexpected status
-                print(f"Unexpected response from server: {response.get('status')}")
-                continue
+                    # Handle unexpected status
+                    print(f"Unexpected response from server: {response.get('status')}")
+                    break  # Exit the retry loop but continue the main auth loop
+                
+                # If we get here, we need to exit the retry loop
+                break
     
     def send_udp_request(self, request_data):
         """Send a request to the server via UDP and get the response"""
         # Maximum number of retries
         max_retries = 3
-        # Initial timeout in seconds
-        timeout = 2.0
+        # Initial timeout in seconds - increase for better reliability
+        timeout = 5.0
         
         # Add a unique request ID to the request data
         request_id = str(uuid.uuid4())
@@ -178,10 +241,15 @@ class ForumClient:
                 # Convert request to JSON and send
                 request_json = json.dumps(request_data).encode('utf-8')
                 server_address = (self.server_host, self.server_port)
+                
+                # Print connection info on first attempt only
+                if attempt == 0:
+                    print(f"Connecting to server at {self.server_host}:{self.server_port}...")
+                
                 request_socket.sendto(request_json, server_address)
                 
                 # Wait for response
-                response_data, _ = request_socket.recvfrom(4096)
+                response_data, server = request_socket.recvfrom(4096)
                 
                 # Parse response
                 response = json.loads(response_data.decode('utf-8'))
@@ -205,6 +273,17 @@ class ForumClient:
                     time.sleep(0.5)  # Add a small delay between retries
                 else:
                     print("Request timed out. Server may be unavailable.")
+                    # Try to ping the server to check connectivity
+                    try:
+                        test_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        test_socket.settimeout(1.0)
+                        test_message = json.dumps({"test": "ping"}).encode('utf-8')
+                        print(f"Testing connectivity to {self.server_host}:{self.server_port}...")
+                        test_socket.sendto(test_message, (self.server_host, self.server_port))
+                        test_socket.close()
+                    except Exception as e:
+                        print(f"Connection test failed: {e}")
+                    
                     return {'status': 'error', 'message': 'Request timed out'}
             except ConnectionResetError as e:
                 print(f"Connection reset by server. Retrying ({attempt+1}/{max_retries})...")
@@ -619,16 +698,19 @@ class ForumClient:
 if __name__ == "__main__":
     # Check command line arguments
     if len(sys.argv) != 2:
-        print("Usage: python client.py <server_port>")
+        print("Usage: python client.py <server_address>")
+        print("  server_address can be 'hostname:port' or just 'port' (default host: localhost)")
         sys.exit(1)
     
     try:
-        server_port = int(sys.argv[1])
+        server_address = sys.argv[1]
         
-        client = ForumClient(server_port)
+        client = ForumClient(server_address)
         client.start()
     except ValueError:
-        print("Port must be a number")
+        print("Invalid server address format")
+        print("Usage: python client.py <server_address>")
+        print("  server_address can be 'hostname:port' or just 'port' (default host: localhost)")
         sys.exit(1)
     except Exception as e:
         print(f"Error starting client: {e}")
