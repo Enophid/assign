@@ -6,6 +6,8 @@ import os
 import time
 import re
 import hashlib
+import uuid
+import random
 
 class ForumServer:
     def __init__(self, port):
@@ -15,6 +17,11 @@ class ForumServer:
         self.lock = threading.Lock()  # for thread safety in concurrent mode
         self.threads = {}  # Store thread information - key will be the thread title
         # No longer need the next_thread_id since we're using titles directly
+        
+        # Request cache for handling duplicated requests due to retransmissions
+        self.request_cache = {}
+        self.request_cache_lock = threading.Lock()
+        self.request_cache_ttl = 60  # Cache TTL in seconds
 
         # Create data directory if it doesn't exist
         if not os.path.exists("server_data"):
@@ -156,8 +163,17 @@ class ForumServer:
         try:
             message = json.loads(data.decode('utf-8'))
             command = message.get('command')
-            request_id = message.get('request_id', 'unknown')
+            request_id = message.get('request_id', str(uuid.uuid4()))
             username = message.get('username', 'Unknown')
+            
+            
+            # Check request cache to avoid reprocessing
+            with self.request_cache_lock:
+                if request_id in self.request_cache:
+                    cached_response = self.request_cache[request_id]['response']
+                    # Send the cached response for duplicated requests
+                    self._send_udp_response(cached_response, client_address, udp_socket, request_id)
+                    return
             
             # Start with a response skeleton
             response = {'status': 'error', 'message': 'Unknown command error'}
@@ -208,7 +224,6 @@ class ForumServer:
                 else:
                     print(f"{username} issued RMV command")
                     print(f"Thread {thread_id} cannot be removed")
-            # Message operations
             elif command == 'post_message':
                 thread_id = message.get('thread_id', 'Unknown')
                 response = self.handle_post_message(message)
@@ -236,7 +251,6 @@ class ForumServer:
                 else:
                     print(f"{username} issued DLT command")
                     print("Message cannot be deleted")
-            # Misc operations
             elif command == 'logout':
                 print(f"{username} exited")
                 print("Waiting for clients")
@@ -247,20 +261,16 @@ class ForumServer:
             # Add request_id to response for client to match request-response
             response['request_id'] = request_id
             
-            # Send response back to client with reliability check
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    udp_socket.sendto(json.dumps(response).encode('utf-8'), client_address)
-                    # UDP is connectionless, so we can't confirm delivery at this level
-                    # The client's retry mechanism will handle lost packets
-                    break
-                except Exception as e:
-                    print(f"Error sending response (attempt {attempt+1}): {e}")
-                    if attempt == max_retries - 1:
-                        print("Failed to send response after multiple attempts")
-                    else:
-                        time.sleep(0.1)  # Small delay before retry
+            # Cache the response for potential retransmissions
+            with self.request_cache_lock:
+                self.request_cache[request_id] = {
+                    'response': response,
+                    'timestamp': time.time(),
+                    'client_address': client_address
+                }
+            
+            # Send response with enhanced reliability
+            self._send_udp_response(response, client_address, udp_socket, request_id)
             
         except json.JSONDecodeError:
             error_response = {'status': 'error', 'message': 'Invalid JSON format'}
@@ -268,7 +278,58 @@ class ForumServer:
         except Exception as e:
             error_response = {'status': 'error', 'message': str(e)}
             udp_socket.sendto(json.dumps(error_response).encode('utf-8'), client_address)
+        
     
+    def _send_udp_response(self, response, client_address, udp_socket, request_id):
+        """Send UDP response with enhanced reliability mechanisms"""
+        # Determine if this is a critical command that needs extra reliability
+        command = response.get('command', '')
+        is_critical = command in ['login', 'logout', 'register'] or response.get('status') == 'error'
+        
+        # Encode response once
+        response_data = json.dumps(response).encode('utf-8')
+        
+        # For critical commands, send multiple copies with slight delays
+        num_copies = 3 if is_critical else 1
+        
+        for attempt in range(num_copies):
+            try:
+                udp_socket.sendto(response_data, client_address)
+                if attempt == 0:
+                    pass
+                else:
+                    # Add a small random delay between retransmissions to prevent collision
+                    jitter_delay = random.uniform(0.05, 0.2)
+                    time.sleep(jitter_delay)
+            except Exception as e:
+                # Add a brief delay before retry
+                time.sleep(0.1)
+    
+    def run_connection_cleanup(self):
+        """Periodically check and clean up stale connections and cached requests"""
+        while True:
+            try:
+                # Sleep first to allow program initialization
+                time.sleep(30)
+                
+                # Clean up request cache
+                current_time = time.time()
+                expired_keys = []
+                
+                with self.request_cache_lock:
+                    for request_id, cache_data in self.request_cache.items():
+                        if current_time - cache_data['timestamp'] > self.request_cache_ttl:
+                            expired_keys.append(request_id)
+                    
+                    # Remove expired entries
+                    for key in expired_keys:
+                        del self.request_cache[key]
+                        
+                # No need to print cleanup messages
+                
+            except Exception as e:
+                print(f"Error during connection cleanup: {e}")
+
     def handle_tcp_connection(self, client_socket, client_address):
         """Handle TCP connection for file transfers"""
         try:
@@ -915,13 +976,6 @@ class ForumServer:
         except Exception as e:
             print(f"Error processing request: {e}")
             return {"status": "error", "message": "Invalid request format"}
-
-    def run_connection_cleanup(self):
-        """Periodically check and clean up stale connections"""
-        while True:
-            # Perform cleanup operations every 60 seconds
-            time.sleep(60)
-            # No cleanup message needed
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
