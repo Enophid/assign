@@ -11,7 +11,8 @@ import hashlib
 
 class ForumClient:
     def __init__(self, server_port):
-        self.server_port = server_port
+        self.server_host = 'localhost'  # Default to localhost
+        self.server_port = int(server_port)
         self.username = None
         self.commands = {
             'CRT': self.create_thread,
@@ -171,7 +172,8 @@ class ForumClient:
                 
                 # Convert request to JSON and send
                 request_json = json.dumps(request_data).encode('utf-8')
-                request_socket.sendto(request_json, (self.server_port))
+                server_address = (self.server_host, self.server_port)
+                request_socket.sendto(request_json, server_address)
                 
                 # Wait for response
                 response_data, _ = request_socket.recvfrom(4096)
@@ -468,7 +470,8 @@ class ForumClient:
         # Create a TCP socket for file transfer
         try:
             tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            tcp_socket.connect((self.server_port))
+            server_address = (self.server_host, self.server_port)
+            tcp_socket.connect(server_address)
             
             # Send file information header
             header = {
@@ -529,7 +532,8 @@ class ForumClient:
         # Create a TCP socket for file transfer
         try:
             tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            tcp_socket.connect((self.server_port))
+            server_address = (self.server_host, self.server_port)
+            tcp_socket.connect(server_address)
             
             # Send file information header
             header = {
