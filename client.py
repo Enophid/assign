@@ -52,7 +52,8 @@ class ForumClient:
         """Handle termination signals"""
         print("\nReceived termination signal. Cleaning up...")
         self.clean_exit()
-        sys.exit(0)
+        # Force exit after cleanup
+        os._exit(0)
     
     def clean_exit(self):
         """Ensure clean exit with logout"""
@@ -71,39 +72,49 @@ class ForumClient:
         """Start the client interface"""
         print("Welcome to the forum")
         
-        # Start with authentication
-        self.authenticate()
-        
-        # Main command loop
-        while True:
-            if not self.username:
-                # If not logged in, try to authenticate
-                self.authenticate()
+        try:
+            # Start with authentication
+            self.authenticate()
+            
+            # Main command loop
+            while True:
                 if not self.username:
-                    # Exit if authentication failed
-                    break
-            
-            # Show available commands and get user input
-            command = self.show_commands()
-            
-            if command == 'XIT':
-                self.exit()
-                break
-            
-            # Split command and arguments
-            parts = command.split()
-            cmd = parts[0] if parts else ''
-            
-            if cmd in self.commands:
+                    # If not logged in, try to authenticate
+                    self.authenticate()
+                    if not self.username:
+                        # Exit if authentication failed
+                        break
+                
+                # Show available commands and get user input
                 try:
-                    if len(parts) > 1:
-                        self.commands[cmd](*parts[1:])
+                    command = self.show_commands()
+                    
+                    if command == 'XIT':
+                        self.exit()
+                        break
+                    
+                    # Split command and arguments
+                    parts = command.split()
+                    cmd = parts[0] if parts else ''
+                    
+                    if cmd in self.commands:
+                        try:
+                            if len(parts) > 1:
+                                self.commands[cmd](*parts[1:])
+                            else:
+                                self.commands[cmd]()
+                        except Exception as e:
+                            print(f"Error executing command: {e}")
                     else:
-                        self.commands[cmd]()
-                except Exception as e:
-                    print(f"Error executing command: {e}")
-            else:
-                print("Invalid command")
+                        print("Invalid command")
+                except KeyboardInterrupt:
+                    print("\nReceived keyboard interrupt. Exiting...")
+                    self.exit()
+                    break
+        except KeyboardInterrupt:
+            print("\nReceived keyboard interrupt. Exiting...")
+            self.clean_exit()
+            os._exit(0)
     
     def authenticate(self):
         """Handle the authentication process"""
@@ -699,6 +710,8 @@ class ForumClient:
             self.logout()
         
         print("Goodbye")
+        # Force exit to ensure the program terminates
+        os._exit(0)
 
 if __name__ == "__main__":
     # Check command line arguments
