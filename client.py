@@ -357,7 +357,7 @@ class ForumClient:
         if response['status'] == 'success':
             print(f"Thread {title} created")
         elif response['status'] == 'timeout_after_send':
-            pass
+            print("Failed after mutiple attempts")
         else:
             print(f"Thread {title} exists")
     
