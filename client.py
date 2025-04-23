@@ -361,7 +361,8 @@ class ForumClient:
             # Check thread existence by trying to list threads
             list_response = self.send_udp_request({
                 'command': 'list_threads',
-                'username': self.username
+                'username': self.username,
+                'verification': True  # Flag to indicate this is an automatic verification, not user-initiated
             })
             
             if list_response['status'] == 'success':
@@ -461,7 +462,8 @@ class ForumClient:
             # Check thread existence by trying to list threads
             list_response = self.send_udp_request({
                 'command': 'list_threads',
-                'username': self.username
+                'username': self.username,
+                'verification': True  # Flag to indicate this is an automatic verification, not user-initiated
             })
             
             if list_response['status'] == 'success':

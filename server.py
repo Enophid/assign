@@ -165,7 +165,7 @@ class ForumServer:
             command = message.get('command')
             request_id = message.get('request_id', str(uuid.uuid4()))
             username = message.get('username', 'Unknown')
-            
+            is_verification = message.get('verification', False)  # Check if this is a verification request
             
             # Check request cache to avoid reprocessing
             with self.request_cache_lock:
@@ -204,7 +204,9 @@ class ForumServer:
                     print(f"{username} issued CRT command")
                     print(f"Thread {thread_title} exists")
             elif command == 'list_threads':
-                print(f"{username} issued LST command")
+                # Only log if this is not a verification request
+                if not is_verification:
+                    print(f"{username} issued LST command")
                 response = self.handle_list_threads(message)
             elif command == 'get_thread':
                 thread_id = message.get('thread_id', 'Unknown')
