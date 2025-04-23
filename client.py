@@ -10,8 +10,7 @@ import atexit
 import hashlib
 
 class ForumClient:
-    def __init__(self, server_ip, server_port):
-        self.server_ip = server_ip
+    def __init__(self, server_port):
         self.server_port = server_port
         self.username = None
         self.commands = {
@@ -172,7 +171,7 @@ class ForumClient:
                 
                 # Convert request to JSON and send
                 request_json = json.dumps(request_data).encode('utf-8')
-                request_socket.sendto(request_json, (self.server_ip, self.server_port))
+                request_socket.sendto(request_json, (self.server_port))
                 
                 # Wait for response
                 response_data, _ = request_socket.recvfrom(4096)
@@ -469,7 +468,7 @@ class ForumClient:
         # Create a TCP socket for file transfer
         try:
             tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            tcp_socket.connect((self.server_ip, self.server_port))
+            tcp_socket.connect((self.server_port))
             
             # Send file information header
             header = {
@@ -530,7 +529,7 @@ class ForumClient:
         # Create a TCP socket for file transfer
         try:
             tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            tcp_socket.connect((self.server_ip, self.server_port))
+            tcp_socket.connect((self.server_port))
             
             # Send file information header
             header = {
@@ -602,15 +601,14 @@ class ForumClient:
 
 if __name__ == "__main__":
     # Check command line arguments
-    if len(sys.argv) != 3:
-        print("Usage: python client.py <server_ip> <server_port>")
+    if len(sys.argv) != 2:
+        print("Usage: python client.py <server_port>")
         sys.exit(1)
     
     try:
-        server_ip = sys.argv[1]
-        server_port = int(sys.argv[2])
+        server_port = int(sys.argv[1])
         
-        client = ForumClient(server_ip, server_port)
+        client = ForumClient(server_port)
         client.start()
     except ValueError:
         print("Port must be a number")
