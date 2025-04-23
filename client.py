@@ -239,13 +239,12 @@ class ForumClient:
                         pass
                 else:
                     if request_sent:
-                        # Since we can't know if login succeeded, return a special status
-                        if request_data.get('command') == 'login':
-                            return {
-                                'status': 'timeout_after_send', 
-                                'message': 'Request sent but response lost',
-                                'request': request_data
-                            }
+                        # For any command where request was sent but response was lost
+                        return {
+                            'status': 'timeout_after_send', 
+                            'message': 'Request sent but response lost',
+                            'request': request_data
+                        }
                         
                     return {'status': 'error', 'message': 'Request timed out after multiple retries'}
             except ConnectionResetError as e:
@@ -358,8 +357,26 @@ class ForumClient:
         if response['status'] == 'success':
             print(f"Thread {title} created")
         elif response['status'] == 'timeout_after_send':
-            # For the clean output, just assume failure
-            print(f"Thread {title} exists")
+            # When timeout occurs after sending, we need to check if thread was created
+            # Check thread existence by trying to list threads
+            list_response = self.send_udp_request({
+                'command': 'list_threads',
+                'username': self.username
+            })
+            
+            if list_response['status'] == 'success':
+                threads = list_response.get('threads', [])
+                thread_exists = any(thread.get('id') == title for thread in threads)
+                
+                if thread_exists:
+                    # Thread was created despite timeout
+                    print(f"Thread {title} created")
+                else:
+                    # Thread was not created
+                    print(f"Thread {title} exists")
+            else:
+                # Can't verify, assume not created
+                print(f"Thread {title} exists")
         else:
             print(f"Thread {title} exists")
     
@@ -440,8 +457,26 @@ class ForumClient:
         if response['status'] == 'success':
             print("Thread removed")
         elif response['status'] == 'timeout_after_send':
-            # For the clean output, just say thread cannot be removed
-            print("Thread cannot be removed")
+            # When timeout occurs after sending, we need to check if thread was removed
+            # Check thread existence by trying to list threads
+            list_response = self.send_udp_request({
+                'command': 'list_threads',
+                'username': self.username
+            })
+            
+            if list_response['status'] == 'success':
+                threads = list_response.get('threads', [])
+                thread_exists = any(thread.get('id') == thread_id for thread in threads)
+                
+                if thread_exists:
+                    # Thread still exists, was not removed
+                    print("Thread cannot be removed")
+                else:
+                    # Thread was removed despite timeout
+                    print("Thread removed")
+            else:
+                # Can't verify, assume not removed
+                print("Thread cannot be removed")
         else:
             print("Thread cannot be removed")
     
