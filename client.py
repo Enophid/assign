@@ -8,6 +8,7 @@ import threading
 import signal
 import atexit
 import hashlib
+import uuid  # Add this for generating unique request IDs
 
 class ForumClient:
     def __init__(self, server_port):
@@ -162,6 +163,10 @@ class ForumClient:
         # Initial timeout in seconds
         timeout = 2.0
         
+        # Add a unique request ID to the request data
+        request_id = str(uuid.uuid4())
+        request_data['request_id'] = request_id
+        
         for attempt in range(max_retries):
             # Create a new socket for each request to avoid connection issues
             request_socket = None
@@ -180,6 +185,14 @@ class ForumClient:
                 
                 # Parse response
                 response = json.loads(response_data.decode('utf-8'))
+                
+                # Check if response is for the current request
+                if response.get('request_id') != request_id:
+                    print("Received response for different request, ignoring")
+                    if attempt < max_retries - 1:
+                        continue
+                    else:
+                        return {'status': 'error', 'message': 'Received mismatched response ID'}
                 
                 # Return response
                 return response

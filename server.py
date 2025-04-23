@@ -15,7 +15,11 @@ class ForumServer:
         self.lock = threading.Lock()  # for thread safety in concurrent mode
         self.threads = {}  # Store thread information - key will be the thread title
         # No longer need the next_thread_id since we're using titles directly
-
+        
+        # Add request tracking to prevent duplicate processing
+        self.processed_requests = {}  # Track processed request IDs
+        self.request_timeout = 30  # Time in seconds to keep request IDs in cache
+        
         # Create data directory if it doesn't exist
         if not os.path.exists("server_data"):
             os.makedirs("server_data")
@@ -159,6 +163,15 @@ class ForumServer:
             request_id = message.get('request_id', 'unknown')
             username = message.get('username', 'Unknown')
             
+            # Check if this is a duplicate request that we've already processed
+            request_key = f"{request_id}:{client_address[0]}:{client_address[1]}"
+            if request_id != 'unknown' and request_key in self.processed_requests:
+                # This is a duplicate request, send the cached response
+                print(f"Received duplicate request: {request_id}")
+                cached_response = self.processed_requests[request_key]['response']
+                udp_socket.sendto(json.dumps(cached_response).encode('utf-8'), client_address)
+                return
+            
             # Start with a response skeleton
             response = {'status': 'error', 'message': 'Unknown command error'}
             
@@ -246,6 +259,13 @@ class ForumServer:
             
             # Add request_id to response for client to match request-response
             response['request_id'] = request_id
+            
+            # Cache the response if this is a new request with an ID
+            if request_id != 'unknown':
+                self.processed_requests[request_key] = {
+                    'timestamp': time.time(),
+                    'response': response
+                }
             
             # Send response back to client with reliability check
             max_retries = 3
@@ -921,7 +941,25 @@ class ForumServer:
         while True:
             # Perform cleanup operations every 60 seconds
             time.sleep(60)
-            # No cleanup message needed
+            
+            # Clean up old processed requests
+            self.cleanup_processed_requests()
+
+    def cleanup_processed_requests(self):
+        """Clean up old processed request IDs"""
+        try:
+            current_time = time.time()
+            keys_to_remove = []
+            
+            with self.lock:
+                for key, data in self.processed_requests.items():
+                    if current_time - data['timestamp'] > self.request_timeout:
+                        keys_to_remove.append(key)
+            
+            for key in keys_to_remove:
+                del self.processed_requests[key]
+        except Exception as e:
+            print(f"Error cleaning up processed requests: {e}")
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
