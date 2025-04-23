@@ -126,9 +126,7 @@ class ForumServer:
         
         while True:
             try:
-                print("Waiting for UDP messages...")
                 data, client_address = udp_socket.recvfrom(4096)
-                print(f"Received {len(data)} bytes from {client_address}")
                 
                 # Handle message in a separate thread for concurrent access
                 threading.Thread(
@@ -174,11 +172,24 @@ class ForumServer:
             
             if request_id != 'unknown' and request_key in self.processed_requests:
                 # This is a duplicate request, send the cached response
-                print(f"Received duplicate request: {request_id}, returning cached response")
+                print(f"Received duplicate request: {request_id}")
                 cached_response = self.processed_requests[request_key]['response']
                 try:
+                    # For authentication commands, ensure we're consistent with the current state
+                    if command in ['login', 'check_username', 'register'] and username in self.active_users:
+                        # If the user is already logged in, always return that fact
+                        if cached_response.get('status') == 'success':
+                            # Don't change success responses - the user should be logged in
+                            pass
+                        else:
+                            # Override the cached response for consistency
+                            cached_response = {
+                                'status': 'error', 
+                                'message': 'Username already logged in by another client',
+                                'request_id': request_id
+                            }
+                    
                     udp_socket.sendto(json.dumps(cached_response).encode('utf-8'), client_address)
-                    print(f"Sent cached response for duplicate request {request_id}")
                 except Exception as e:
                     print(f"Error sending cached response: {e}")
                 return
@@ -284,7 +295,6 @@ class ForumServer:
             for attempt in range(max_retries):
                 try:
                     udp_socket.sendto(json.dumps(response).encode('utf-8'), client_address)
-                    print(f"Sent response to {client_address} for request {request_id} (attempt {attempt+1})")
                     # UDP is connectionless, so we can't confirm delivery at this level
                     # The client's retry mechanism will handle lost packets
                     break
@@ -360,20 +370,23 @@ class ForumServer:
         """Handle user login with existing account"""
         username = message.get('username')
         password = message.get('password')
+        request_id = message.get('request_id', 'unknown')
         
         if not username or not password:
             return {'status': 'error', 'message': 'Username and password required'}
         
-        # Check if username is already active
+        # Check if username is already active regardless of password
         if username in self.active_users:
             print(f"{username} has already logged in")
             return {'status': 'error', 'message': 'Username already logged in by another client'}
         
         # Verify password
         if username in self.users and self.users[username] == password:
+            # Mark user as active
             self.active_users.add(username)
             return {'status': 'success', 'message': 'Welcome to the forum'}
         else:
+            print("Incorrect password")
             return {'status': 'error', 'message': 'Invalid password'}
     
     def handle_register(self, message):
