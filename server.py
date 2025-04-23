@@ -6,6 +6,8 @@ import os
 import time
 import re
 import hashlib
+import uuid
+import random
 
 class ForumServer:
     def __init__(self, port):
@@ -16,10 +18,11 @@ class ForumServer:
         self.threads = {}  # Store thread information - key will be the thread title
         # No longer need the next_thread_id since we're using titles directly
         
-        # Add request tracking to prevent duplicate processing
-        self.processed_requests = {}  # Track processed request IDs
-        self.request_timeout = 30  # Time in seconds to keep request IDs in cache
-        
+        # Request cache for handling duplicated requests due to retransmissions
+        self.request_cache = {}
+        self.request_cache_lock = threading.Lock()
+        self.request_cache_ttl = 60  # Cache TTL in seconds
+
         # Create data directory if it doesn't exist
         if not os.path.exists("server_data"):
             os.makedirs("server_data")
@@ -122,8 +125,6 @@ class ForumServer:
         udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp_socket.bind(('0.0.0.0', self.port))
         
-        print(f"UDP server listening on port {self.port}")
-        
         while True:
             try:
                 data, client_address = udp_socket.recvfrom(4096)
@@ -162,37 +163,20 @@ class ForumServer:
         try:
             message = json.loads(data.decode('utf-8'))
             command = message.get('command')
-            request_id = message.get('request_id', 'unknown')
+            request_id = message.get('request_id', str(uuid.uuid4()))
             username = message.get('username', 'Unknown')
             
+            print(f"Received {len(data)} bytes from {client_address}")
             print(f"Processing command: {command} from {client_address}, request_id: {request_id}")
             
-            # Check if this is a duplicate request that we've already processed
-            request_key = f"{request_id}:{client_address[0]}:{client_address[1]}"
-            
-            if request_id != 'unknown' and request_key in self.processed_requests:
-                # This is a duplicate request, send the cached response
-                print(f"Received duplicate request: {request_id}")
-                cached_response = self.processed_requests[request_key]['response']
-                try:
-                    # For authentication commands, ensure we're consistent with the current state
-                    if command in ['login', 'check_username', 'register'] and username in self.active_users:
-                        # If the user is already logged in, always return that fact
-                        if cached_response.get('status') == 'success':
-                            # Don't change success responses - the user should be logged in
-                            pass
-                        else:
-                            # Override the cached response for consistency
-                            cached_response = {
-                                'status': 'error', 
-                                'message': 'Username already logged in by another client',
-                                'request_id': request_id
-                            }
-                    
-                    udp_socket.sendto(json.dumps(cached_response).encode('utf-8'), client_address)
-                except Exception as e:
-                    print(f"Error sending cached response: {e}")
-                return
+            # Check request cache to avoid reprocessing
+            with self.request_cache_lock:
+                if request_id in self.request_cache:
+                    cached_response = self.request_cache[request_id]['response']
+                    print(f"Cached response for request {request_id}")
+                    # Send the cached response for duplicated requests
+                    self._send_udp_response(cached_response, client_address, udp_socket, request_id)
+                    return
             
             # Start with a response skeleton
             response = {'status': 'error', 'message': 'Unknown command error'}
@@ -243,7 +227,6 @@ class ForumServer:
                 else:
                     print(f"{username} issued RMV command")
                     print(f"Thread {thread_id} cannot be removed")
-            # Message operations
             elif command == 'post_message':
                 thread_id = message.get('thread_id', 'Unknown')
                 response = self.handle_post_message(message)
@@ -271,7 +254,6 @@ class ForumServer:
                 else:
                     print(f"{username} issued DLT command")
                     print("Message cannot be deleted")
-            # Misc operations
             elif command == 'logout':
                 print(f"{username} exited")
                 print("Waiting for clients")
@@ -282,28 +264,16 @@ class ForumServer:
             # Add request_id to response for client to match request-response
             response['request_id'] = request_id
             
-            # Cache the response if this is a new request with an ID
-            if request_id != 'unknown':
-                self.processed_requests[request_key] = {
+            # Cache the response for potential retransmissions
+            with self.request_cache_lock:
+                self.request_cache[request_id] = {
+                    'response': response,
                     'timestamp': time.time(),
-                    'response': response
+                    'client_address': client_address
                 }
-                print(f"Cached response for request {request_id}")
             
-            # Send response back to client with reliability check
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    udp_socket.sendto(json.dumps(response).encode('utf-8'), client_address)
-                    # UDP is connectionless, so we can't confirm delivery at this level
-                    # The client's retry mechanism will handle lost packets
-                    break
-                except Exception as e:
-                    print(f"Error sending response (attempt {attempt+1}): {e}")
-                    if attempt == max_retries - 1:
-                        print("Failed to send response after multiple attempts")
-                    else:
-                        time.sleep(0.1)  # Small delay before retry
+            # Send response with enhanced reliability
+            self._send_udp_response(response, client_address, udp_socket, request_id)
             
         except json.JSONDecodeError:
             error_response = {'status': 'error', 'message': 'Invalid JSON format'}
@@ -311,7 +281,61 @@ class ForumServer:
         except Exception as e:
             error_response = {'status': 'error', 'message': str(e)}
             udp_socket.sendto(json.dumps(error_response).encode('utf-8'), client_address)
+        
+        print("Waiting for UDP messages...")
     
+    def _send_udp_response(self, response, client_address, udp_socket, request_id):
+        """Send UDP response with enhanced reliability mechanisms"""
+        # Determine if this is a critical command that needs extra reliability
+        command = response.get('command', '')
+        is_critical = command in ['login', 'logout', 'register'] or response.get('status') == 'error'
+        
+        # Encode response once
+        response_data = json.dumps(response).encode('utf-8')
+        
+        # For critical commands, send multiple copies with slight delays
+        num_copies = 3 if is_critical else 1
+        
+        for attempt in range(num_copies):
+            try:
+                udp_socket.sendto(response_data, client_address)
+                if attempt == 0:
+                    print(f"Sent response to {client_address} for request {request_id} (attempt {attempt+1})")
+                else:
+                    # Add a small random delay between retransmissions to prevent collision
+                    jitter_delay = random.uniform(0.05, 0.2)
+                    time.sleep(jitter_delay)
+                    print(f"Sent duplicate response to {client_address} for request {request_id} (attempt {attempt+1})")
+            except Exception as e:
+                print(f"Error sending response (attempt {attempt+1}): {e}")
+                # Add a brief delay before retry
+                time.sleep(0.1)
+    
+    def run_connection_cleanup(self):
+        """Periodically check and clean up stale connections and cached requests"""
+        while True:
+            try:
+                # Sleep first to allow program initialization
+                time.sleep(30)
+                
+                # Clean up request cache
+                current_time = time.time()
+                expired_keys = []
+                
+                with self.request_cache_lock:
+                    for request_id, cache_data in self.request_cache.items():
+                        if current_time - cache_data['timestamp'] > self.request_cache_ttl:
+                            expired_keys.append(request_id)
+                    
+                    # Remove expired entries
+                    for key in expired_keys:
+                        del self.request_cache[key]
+                        
+                # No need to print cleanup messages
+                
+            except Exception as e:
+                print(f"Error during connection cleanup: {e}")
+
     def handle_tcp_connection(self, client_socket, client_address):
         """Handle TCP connection for file transfers"""
         try:
@@ -370,23 +394,20 @@ class ForumServer:
         """Handle user login with existing account"""
         username = message.get('username')
         password = message.get('password')
-        request_id = message.get('request_id', 'unknown')
         
         if not username or not password:
             return {'status': 'error', 'message': 'Username and password required'}
         
-        # Check if username is already active regardless of password
+        # Check if username is already active
         if username in self.active_users:
             print(f"{username} has already logged in")
             return {'status': 'error', 'message': 'Username already logged in by another client'}
         
         # Verify password
         if username in self.users and self.users[username] == password:
-            # Mark user as active
             self.active_users.add(username)
             return {'status': 'success', 'message': 'Welcome to the forum'}
         else:
-            print("Incorrect password")
             return {'status': 'error', 'message': 'Invalid password'}
     
     def handle_register(self, message):
@@ -431,44 +452,32 @@ class ForumServer:
             if isinstance(message, dict):
                 username = message.get('username')
                 thread_title = message.get('title')
-                request_id = message.get('request_id', 'unknown')
             else:
                 # Handle pipe-separated format for backward compatibility
                 fields = message.split("|")
                 username = fields[1]
                 thread_title = fields[2]
-                request_id = 'unknown'
-            
-            print(f"Thread creation request: {thread_title} by {username}, request_id: {request_id}")
             
             # Check if thread title already exists
             if thread_title in self.threads:
-                print(f"Thread '{thread_title}' already exists")
                 return {"status": "error", "message": "Thread with this title already exists"}
             
             # Create a new thread entry with title as the key
-            with self.lock:  # Use lock to prevent race conditions
-                # Double check that the thread doesn't exist (could have been created by another request)
-                if thread_title in self.threads:
-                    print(f"Thread '{thread_title}' already exists (race condition detected)")
-                    return {"status": "error", "message": "Thread with this title already exists"}
-                
-                self.threads[thread_title] = {
-                    'title': thread_title,
-                    'creator': username,
-                    'created_at': time.time(),
-                    'messages': [],
-                    'files': []
-                }
-                
-                # Save threads to file
-                if self.save_threads():
-                    print(f"Thread '{thread_title}' created successfully by {username}")
-                    return {"status": "success", "message": f"Thread '{thread_title}' created successfully"}
-                else:
-                    # Roll back if save failed
-                    del self.threads[thread_title]
-                    return {"status": "error", "message": "Failed to save thread"}
+            self.threads[thread_title] = {
+                'title': thread_title,
+                'creator': username,
+                'created_at': time.time(),
+                'messages': [],
+                'files': []
+            }
+            
+            # Save threads to file
+            if self.save_threads():
+                return {"status": "success", "message": f"Thread '{thread_title}' created successfully"}
+            else:
+                # Roll back if save failed
+                del self.threads[thread_title]
+                return {"status": "error", "message": "Failed to save thread"}
         except Exception as e:
             print(f"Error creating thread: {e}")
             return {"status": "error", "message": "Failed to create thread"}
@@ -973,31 +982,6 @@ class ForumServer:
         except Exception as e:
             print(f"Error processing request: {e}")
             return {"status": "error", "message": "Invalid request format"}
-
-    def run_connection_cleanup(self):
-        """Periodically check and clean up stale connections"""
-        while True:
-            # Perform cleanup operations every 60 seconds
-            time.sleep(60)
-            
-            # Clean up old processed requests
-            self.cleanup_processed_requests()
-
-    def cleanup_processed_requests(self):
-        """Clean up old processed request IDs"""
-        try:
-            current_time = time.time()
-            keys_to_remove = []
-            
-            with self.lock:
-                for key, data in self.processed_requests.items():
-                    if current_time - data['timestamp'] > self.request_timeout:
-                        keys_to_remove.append(key)
-            
-            for key in keys_to_remove:
-                del self.processed_requests[key]
-        except Exception as e:
-            print(f"Error cleaning up processed requests: {e}")
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
