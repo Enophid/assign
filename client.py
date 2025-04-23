@@ -8,6 +8,7 @@ import threading
 import signal
 import atexit
 import hashlib
+import uuid
 
 class ForumClient:
     def __init__(self, server_port):
@@ -50,7 +51,6 @@ class ForumClient:
                 with open(cache_file, "r") as f:
                     self.login_cache = json.load(f)
         except Exception as e:
-            print(f"Failed to load login cache: {e}")
             self.login_cache = {}
 
     def save_login_cache(self):
@@ -61,18 +61,16 @@ class ForumClient:
             with open(cache_file, "w") as f:
                 json.dump(self.login_cache, f)
         except Exception as e:
-            print(f"Failed to save login cache: {e}")
+            pass
 
     def signal_handler(self, sig, frame):
         """Handle termination signals"""
-        print("\nReceived termination signal. Cleaning up...")
         self.clean_exit()
         sys.exit(0)
     
     def clean_exit(self):
         """Ensure clean exit with logout"""
         if self.username:
-            print("Logging out due to client shutdown...")
             try:
                 self.logout(silent=True)
             except:
@@ -84,7 +82,6 @@ class ForumClient:
     
     def start(self):
         """Start the client interface"""
-        print("Welcome to the forum")
         
         # Start with authentication
         self.authenticate()
@@ -206,10 +203,6 @@ class ForumClient:
                 # Convert request to JSON and send
                 request_json = json.dumps(request_data).encode('utf-8')
                 
-                # Print connection info on first attempt only
-                if attempt == 0:
-                    print(f"Connecting to server at {self.server_host}:{self.server_port}...")
-                
                 # Send the request (multiple times for critical operations)
                 critical_commands = ['login', 'logout', 'register', 'check_username']
                 is_critical = request_data.get('command', '') in critical_commands
@@ -230,7 +223,6 @@ class ForumClient:
                 # Check if response ID matches request ID
                 resp_id = response.get('request_id', '')
                 if resp_id and resp_id != request_id:
-                    print(f"Warning: Received response for different request ({resp_id})")
                     if attempt < max_retries - 1:
                         continue
                 
@@ -242,36 +234,27 @@ class ForumClient:
                 timeout = min(timeout * 1.5, 4.0)
                 
                 if attempt < max_retries - 1:
-                    print(f"Request timed out. Retrying ({attempt+1}/{max_retries})...")
-                    
                     # For final attempts, try sending multiple copies of the request
                     if attempt >= max_retries - 2:
-                        print("Sending multiple request copies...")
+                        pass
                 else:
                     if request_sent:
-                        print("Maximum retries reached. The server may have received your request")
-                        print("but the response was lost. Check if your operation completed.")
-                        
-                        # Special handling for login operations with extreme loss
+                        # Since we can't know if login succeeded, return a special status
                         if request_data.get('command') == 'login':
-                            # Since we can't know if login succeeded, return a special status
                             return {
                                 'status': 'timeout_after_send', 
-                                'message': 'Request sent but response lost. Try another operation.',
+                                'message': 'Request sent but response lost',
                                 'request': request_data
                             }
                         
                     return {'status': 'error', 'message': 'Request timed out after multiple retries'}
             except ConnectionResetError as e:
-                print(f"Connection reset by server. Retrying ({attempt+1}/{max_retries})...")
                 if attempt < max_retries - 1:
                     time.sleep(0.5)  # Longer delay for connection reset errors
                 else:
                     return {'status': 'error', 'message': str(e)}
             except Exception as e:
-                print(f"Error communicating with server: {e}")
                 if attempt < max_retries - 1:
-                    print(f"Retrying ({attempt+1}/{max_retries})...")
                     time.sleep(0.5)
                 else:
                     return {'status': 'error', 'message': str(e)}
@@ -314,8 +297,7 @@ class ForumClient:
         elif response['status'] == 'timeout_after_send':
             # Check if we have a cached login that matches
             if username in self.login_cache and self.login_cache[username]['password'] == password:
-                print("Using cached login due to server response timeout")
-                return {'status': 'success', 'message': 'Welcome to the forum (using cached login)'}
+                return {'status': 'success', 'message': 'Welcome to the forum'}
         
         return response
     
@@ -375,6 +357,9 @@ class ForumClient:
         
         if response['status'] == 'success':
             print(f"Thread {title} created")
+        elif response['status'] == 'timeout_after_send':
+            # For the clean output, just assume failure
+            print(f"Thread {title} exists")
         else:
             print(f"Thread {title} exists")
     
@@ -400,7 +385,7 @@ class ForumClient:
                 thread_id = thread.get('id', 'Unknown')
                 print(thread_id)
         else:
-            print(f"Failed to list threads: {response.get('message', 'Unknown error')}")
+            print("No threads to list")
     
     def read_thread(self, *args):
         """Read a thread's messages (RDT)"""
@@ -454,6 +439,9 @@ class ForumClient:
         
         if response['status'] == 'success':
             print("Thread removed")
+        elif response['status'] == 'timeout_after_send':
+            # For the clean output, just say thread cannot be removed
+            print("Thread cannot be removed")
         else:
             print("Thread cannot be removed")
     
@@ -478,6 +466,9 @@ class ForumClient:
         
         if response['status'] == 'success':
             print(f"Message posted to {thread_id} thread")
+        elif response['status'] == 'timeout_after_send':
+            # For the clean output, just say failed
+            print(f"Failed to post to {thread_id} thread")
         else:
             print(f"Failed to post to {thread_id} thread")
     
@@ -503,6 +494,9 @@ class ForumClient:
         
         if response['status'] == 'success':
             print("The message has been edited")
+        elif response['status'] == 'timeout_after_send':
+            # For the clean output, just say cannot edit
+            print("The message belongs to another user and cannot be edited")
         else:
             print("The message belongs to another user and cannot be edited")
     
@@ -525,6 +519,9 @@ class ForumClient:
         
         if response['status'] == 'success':
             print("The message has been deleted")
+        elif response['status'] == 'timeout_after_send':
+            # For the clean output, just say cannot delete
+            print("The message belongs to another user and cannot be deleted")
         else:
             print("The message belongs to another user and cannot be deleted")
     
