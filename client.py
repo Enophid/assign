@@ -382,8 +382,13 @@ class ForumClient:
         
         if response['status'] == 'success':
             print(f"Thread {title} created")
+        elif 'timed out' in response.get('message', '').lower():
+            print(f"Warning: Couldn't confirm if thread '{title}' was created due to timeout.")
+            print("Use 'LST' command to check if the thread exists.")
+        elif 'already exists' in response.get('message', '').lower():
+            print(f"Thread {title} already exists")
         else:
-            print(f"Thread {title} exists")
+            print(f"Error creating thread: {response.get('message', 'Unknown error')}")
     
     def list_threads(self):
         """List all available threads (LST)"""

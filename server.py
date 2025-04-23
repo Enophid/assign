@@ -171,11 +171,16 @@ class ForumServer:
             
             # Check if this is a duplicate request that we've already processed
             request_key = f"{request_id}:{client_address[0]}:{client_address[1]}"
+            
             if request_id != 'unknown' and request_key in self.processed_requests:
                 # This is a duplicate request, send the cached response
-                print(f"Received duplicate request: {request_id}")
+                print(f"Received duplicate request: {request_id}, returning cached response")
                 cached_response = self.processed_requests[request_key]['response']
-                udp_socket.sendto(json.dumps(cached_response).encode('utf-8'), client_address)
+                try:
+                    udp_socket.sendto(json.dumps(cached_response).encode('utf-8'), client_address)
+                    print(f"Sent cached response for duplicate request {request_id}")
+                except Exception as e:
+                    print(f"Error sending cached response: {e}")
                 return
             
             # Start with a response skeleton
@@ -272,12 +277,14 @@ class ForumServer:
                     'timestamp': time.time(),
                     'response': response
                 }
+                print(f"Cached response for request {request_id}")
             
             # Send response back to client with reliability check
             max_retries = 3
             for attempt in range(max_retries):
                 try:
                     udp_socket.sendto(json.dumps(response).encode('utf-8'), client_address)
+                    print(f"Sent response to {client_address} for request {request_id} (attempt {attempt+1})")
                     # UDP is connectionless, so we can't confirm delivery at this level
                     # The client's retry mechanism will handle lost packets
                     break
@@ -411,32 +418,44 @@ class ForumServer:
             if isinstance(message, dict):
                 username = message.get('username')
                 thread_title = message.get('title')
+                request_id = message.get('request_id', 'unknown')
             else:
                 # Handle pipe-separated format for backward compatibility
                 fields = message.split("|")
                 username = fields[1]
                 thread_title = fields[2]
+                request_id = 'unknown'
+            
+            print(f"Thread creation request: {thread_title} by {username}, request_id: {request_id}")
             
             # Check if thread title already exists
             if thread_title in self.threads:
+                print(f"Thread '{thread_title}' already exists")
                 return {"status": "error", "message": "Thread with this title already exists"}
             
             # Create a new thread entry with title as the key
-            self.threads[thread_title] = {
-                'title': thread_title,
-                'creator': username,
-                'created_at': time.time(),
-                'messages': [],
-                'files': []
-            }
-            
-            # Save threads to file
-            if self.save_threads():
-                return {"status": "success", "message": f"Thread '{thread_title}' created successfully"}
-            else:
-                # Roll back if save failed
-                del self.threads[thread_title]
-                return {"status": "error", "message": "Failed to save thread"}
+            with self.lock:  # Use lock to prevent race conditions
+                # Double check that the thread doesn't exist (could have been created by another request)
+                if thread_title in self.threads:
+                    print(f"Thread '{thread_title}' already exists (race condition detected)")
+                    return {"status": "error", "message": "Thread with this title already exists"}
+                
+                self.threads[thread_title] = {
+                    'title': thread_title,
+                    'creator': username,
+                    'created_at': time.time(),
+                    'messages': [],
+                    'files': []
+                }
+                
+                # Save threads to file
+                if self.save_threads():
+                    print(f"Thread '{thread_title}' created successfully by {username}")
+                    return {"status": "success", "message": f"Thread '{thread_title}' created successfully"}
+                else:
+                    # Roll back if save failed
+                    del self.threads[thread_title]
+                    return {"status": "error", "message": "Failed to save thread"}
         except Exception as e:
             print(f"Error creating thread: {e}")
             return {"status": "error", "message": "Failed to create thread"}
