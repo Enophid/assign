@@ -356,28 +356,6 @@ class ForumClient:
         
         if response['status'] == 'success':
             print(f"Thread {title} created")
-        elif response['status'] == 'timeout_after_send':
-            # When timeout occurs after sending, we need to check if thread was created
-            # Check thread existence by trying to list threads
-            list_response = self.send_udp_request({
-                'command': 'list_threads',
-                'username': self.username,
-                'verification': True  # Flag to indicate this is an automatic verification, not user-initiated
-            })
-            
-            if list_response['status'] == 'success':
-                threads = list_response.get('threads', [])
-                thread_exists = any(thread.get('id') == title for thread in threads)
-                
-                if thread_exists:
-                    # Thread was created despite timeout
-                    print(f"Thread {title} created")
-                else:
-                    # Thread was not created
-                    print(f"Thread {title} exists")
-            else:
-                # Can't verify, assume not created
-                print(f"Thread {title} exists")
         else:
             print(f"Thread {title} exists")
     
