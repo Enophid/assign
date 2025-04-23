@@ -356,6 +356,8 @@ class ForumClient:
         
         if response['status'] == 'success':
             print(f"Thread {title} created")
+        elif response['status'] == 'timeout_after_send':
+            pass
         else:
             print(f"Thread {title} exists")
     
